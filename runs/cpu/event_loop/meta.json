@@ -1,0 +1,13 @@
+{
+  "scenario": "cpu",
+  "about": "300ms の CPU 計算を1件送り、その最中に軽いリクエストを4件送る",
+  "server": "event_loop",
+  "client_start_ns": 782044142019,
+  "interval_ms": 10,
+  "samples": 43,
+  "cores": 2,
+  "kernel": "6.18.44-fc-v819",
+  "arch": "x86_64",
+  "server_exited": true,
+  "plans": [{"offset_ms":0,"path":"/cpu?ms=300"},{"offset_ms":50,"path":"/"},{"offset_ms":100,"path":"/"},{"offset_ms":150,"path":"/"},{"offset_ms":200,"path":"/"}]
+}

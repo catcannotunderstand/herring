@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webサーバの同時処理を観察する</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100,400;100,600;112,800&display=swap" rel="stylesheet">
+<style>
+/* VOICE: 計測記録。結論を先に、数字は実測だけ
+   IDEA: 駅の時刻表とロジックアナライザ。4つのサーバを同じ時間軸の「路線」として縦に並べる
+   PICTURE: サーバごとのパネル（1行 = 1リクエスト、スレッドのレーン、資源のゲージ）。ドラッグで µs まで拡大
+   COLOUR and TYPE: 白地に黒、I/O 待ちは信号赤、epoll は青、カーネル待ちは薄い赤。Archivo 112/800 の数字
+   LAYOUT: 上にシナリオのタブと各サーバの見出し数字、全幅のパネル、読みどころ、数値表、観察の設計 */
+:root{color-scheme:light dark;--bg:light-dark(#fff,#0e0e0e);--ink:light-dark(#111,#f0f0f0);--sub:light-dark(#595959,#a6a6a6);--line:light-dark(#e4e4e4,#2a2a2a);--red:#e4002b;--blue:light-dark(#0057b8,#4f95ec);--queue:light-dark(#f4a2b1,#8d2e40);--recv:light-dark(#d2d2d2,#3e3e3e);--grey:light-dark(#8c8c8c,#7b7b7b);--futex:light-dark(#ececec,#242424);--yel:#f2b705;--panel:light-dark(#f4f4f4,#161616)}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+html{scroll-padding-top:20px}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 Archivo,"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;overflow-x:clip}
+.band{padding:clamp(22px,3.5vw,52px) max(4vw,16px);max-width:1280px;margin:0 auto}
+header.band{border-top:10px solid var(--ink);padding-bottom:0}
+h1{font-size:clamp(30px,4.8vw,50px);line-height:1.08;margin:0 0 12px;font-weight:800;font-stretch:112%;text-wrap:balance;letter-spacing:-.01em}
+h2{font-size:clamp(22px,2.6vw,28px);line-height:1.2;margin:0 0 10px;font-weight:800;font-stretch:112%;text-wrap:balance}
+h3{font-size:17px;margin:22px 0 6px;font-weight:700}
+p{margin:0 0 12px;max-width:72ch}
+.lede{color:var(--sub)}
+code{font-size:.92em;overflow-wrap:anywhere}
+a{color:inherit}
+.scn{display:flex;gap:0;border-top:3px solid var(--ink);margin-top:20px;overflow-x:auto}
+.scn button{appearance:none;background:none;border:0;color:inherit;font:inherit;text-align:start;padding:12px 18px 14px 0;min-height:44px;cursor:pointer;flex:1 1 0;border-bottom:1px solid var(--line)}
+.scn button+button{padding-left:18px;border-left:1px solid var(--line)}
+.scn button[aria-selected=true]{box-shadow:inset 0 -5px 0 var(--red)}
+.scn button:focus-visible,.tools button:focus-visible{outline:3px solid var(--blue);outline-offset:-3px}
+.scn b{display:block;font-size:18px;font-weight:800;font-stretch:112%}
+.scn span{font-size:13px;color:var(--sub)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0;margin-top:18px;border-top:1px solid var(--line)}
+.card{padding:12px 16px 14px 0}.card+.card{padding-left:16px;border-left:1px solid var(--line)}
+.card .nm{font-weight:600}.card .kd{font-size:13px;color:var(--sub);display:block}
+.card .big{display:block;font-weight:800;font-stretch:112%;font-size:clamp(32px,4.4vw,46px);line-height:1.05;margin:4px 0 2px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.card .big small{font-size:.42em;font-weight:600;margin-left:3px}
+.card .hl{font-size:13px;color:var(--sub)}
+.card .mt{font-size:13px;color:var(--sub);display:block}
+.tools{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;margin:18px 0 6px;position:sticky;top:0;background:var(--bg);z-index:3;padding:8px 0;border-bottom:1px solid var(--line)}
+.tools button{appearance:none;font:inherit;font-size:14px;min-height:40px;padding:0 14px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer}
+.tools button.on{background:var(--ink);color:var(--bg)}
+.tools .rng{font-size:13px;color:var(--sub);font-variant-numeric:tabular-nums;margin-left:auto}
+.panel{margin-top:18px}
+.panel h3{margin:0 0 2px;display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline}
+.panel h3 span{font-size:13px;font-weight:400;color:var(--sub)}
+.fig{position:relative}
+.fig svg{display:block;width:100%;touch-action:pan-y;user-select:none;-webkit-user-select:none}
+.sel{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--blue) 18%,transparent);border:1px solid var(--blue);display:none;pointer-events:none}
+.tip{position:absolute;z-index:4;pointer-events:none;background:var(--ink);color:var(--bg);font-size:13px;line-height:1.5;padding:7px 10px;border-radius:3px;display:none;max-width:min(360px,90vw)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--sub);margin:16px 0 0;padding:0;list-style:none}
+.legend li{display:flex;align-items:center;gap:6px}.legend i{width:20px;height:11px;flex:none;display:inline-block}
+.legend li.h{color:var(--ink);font-weight:600;width:7.5em}
+.read{border-top:3px solid var(--ink);padding-top:16px;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:32px}
+.read ul{margin:0;padding-left:1.1em}.read li{margin-bottom:8px;max-width:70ch}
+.tip-box{background:var(--panel);padding:14px 16px;font-size:15px;align-self:start}
+.tip-box b{display:block;margin-bottom:4px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{font-weight:600;color:var(--sub);font-size:13px;vertical-align:bottom;white-space:normal;border-bottom:2px solid var(--ink)}
+.design{background:var(--panel);max-width:none}
+.design>div{max-width:1280px;margin:0 auto}
+.design table{background:var(--bg)}
+.design td,.design th{white-space:normal;text-align:left;vertical-align:top}
+pre{overflow-x:auto;background:var(--bg);padding:12px 14px;font-size:13px;line-height:1.55;border-left:4px solid var(--ink);margin:10px 0 14px}
+.note{font-size:13px;color:var(--sub)}
+.err{background:var(--queue);padding:14px 16px}
+@media(max-width:760px){.read{grid-template-columns:minmax(0,1fr)}.card{padding-left:0!important;border-left:0!important;border-top:1px solid var(--line)}.cards{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:14px}.tools .rng{margin-left:0;width:100%}}
+@media(max-width:600px){table{font-size:13px}.stack thead{display:none}.stack tr{display:grid;padding-block:10px}.stack td{display:flow-root;border:0;padding:3px 0;padding-inline-start:9em;text-align:start;white-space:normal}.stack td::before{content:attr(data-l);float:inline-start;width:8.5em;margin-inline-start:-9em;white-space:normal;color:var(--sub)}.stack td:empty{display:none}.scn button{padding-right:10px}.scn button+button{padding-left:10px}.scn span{display:none}}
+</style>
+<script>new MutationObserver(()=>{for(const c of document.querySelectorAll('.stack td:not([data-l])')){let i=0,p=c;while(p=p.previousElementSibling)i+=p.colSpan;c.dataset.l=c.closest('table').rows[0].cells[i]?.textContent||''}}).observe(document,{childList:true,subtree:true})</script>
+</head>
+<body>
+<header class="band">
+  <h1>待っているあいだに、別のリクエストを進める</h1>
+  <p class="lede">4種類の小さな Web サーバに同じリクエストを送りました。サーバの内側（埋め込んだ計測点）と外側（10ms ごとの <code>/proc</code>）の両方から記録しています。どのパネルも同じ時間軸で、ドラッグすると µs の世界まで拡大できます。</p>
+  <div class="scn" role="tablist" id="scn"></div>
+</header>
+
+<main>
+<section class="band" style="padding-top:18px">
+  <h2 id="sc-title"></h2>
+  <p id="sc-about" class="lede"></p>
+  <div class="cards" id="cards"></div>
+  <div class="tools" id="tools"></div>
+  <div id="panels"></div>
+  <ul class="legend" id="lg-req"></ul>
+  <ul class="legend" id="lg-thr" style="margin-top:6px"></ul>
+</section>
+
+<section class="band" style="padding-top:0">
+  <div class="read"><div><h2>読みどころ</h2><ul id="look"></ul></div><div class="tip-box" id="tipbox"></div></div>
+</section>
+
+<section class="band" style="padding-top:0">
+  <h2>数値で比べる</h2>
+  <div class="scroll"><table class="stack" id="tbl"></table></div>
+  <p class="note" style="margin-top:8px">CPU 時間と CPU に載った回数は、サンプラーが読んだ <code>/proc/&lt;pid&gt;/task/*/schedstat</code> の増分です（最後の 10ms ぶんは取りこぼすことがあります）。応答時間はクライアントの <code>connect()</code> から応答を読み終えるまで。</p>
+</section>
+
+<section class="band design" id="design"><div>
+  <h2>観察の設計：何を、どの間隔で、どう見せるか</h2>
+  <p>同時処理の仕組みは「待ち時間のあいだに何が起きているか」に尽きます。それを見るために、性質の違う3つの記録を同じ時計（<code>CLOCK_MONOTONIC</code>、ナノ秒）でそろえました。</p>
+  <div class="scroll"><table class="stack">
+    <thead><tr><th>記録</th><th>取り方</th><th>間隔</th><th>見えるもの</th></tr></thead>
+    <tbody>
+      <tr><td><b>サーバの内部イベント</b></td><td>サーバに計測点を埋め込み、起きた瞬間の時刻とスレッド ID をメモリに積む。ファイルへの書き出しは終了時に1回だけ</td><td>間隔なし（起きたときだけ）</td><td>accept、read、epoll_wait から戻った瞬間、I/O 待ちの開始と終了、CPU 計算、応答の送信</td></tr>
+      <tr><td><b>クライアントのイベント</b></td><td>同じ時計で <code>connect</code> → <code>connected</code> → <code>sent</code> → <code>first</code> → <code>done</code> を記録。<code>X-Req</code> ヘッダでサーバ側の記録と結びつける</td><td>間隔なし</td><td>使う人から見た待ち時間。サーバが accept する前に、カーネルの中で待たされた時間</td></tr>
+      <tr><td><b>外からのサンプリング</b></td><td>別プロセスが <code>/proc</code> を読む（サーバには手を入れない）</td><td>10ms</td><td>スレッドの数と状態、CPU 時間（ns）、メモリ、fd の数、accept 待ちのキュー、接続数</td></tr>
+    </tbody></table></div>
+
+  <h3>なぜ一定間隔のサンプリングだけでは足りないか</h3>
+  <p>イベントループが接続を受け付けてリクエストを読むまでは、数 µs〜数十 µs で終わります。10ms 間隔で覗いても、ほぼ確実にその瞬間は写りません（前回の 50ms 版で epoll の書き込み監視が写らなかったのはこのためです）。「状態」は間隔を決めて覗き、「出来事」は起きた瞬間に記録する。この2つを分けて考えるのが、設計の出発点です。</p>
+
+  <h3>サンプリング間隔を 10ms にした理由</h3>
+  <ul>
+    <li><b>見たい現象の長さ</b>：I/O 待ちは 1000ms、CPU 計算は 300ms、軽いリクエストは 50ms 刻みで届きます。10ms なら、最も短い 50ms の変化にも5点が入ります。</li>
+    <li><b>1回の観察にかかる時間</b>：<span id="cost-text">実測で約 0.6ms です（スレッド数本の場合）</span>。1ms 間隔にすると、500 スレッドのときは観察が追いつきません。</li>
+    <li><b>CPU 時間の精度は別に確保する</b>：<code>/proc/&lt;pid&gt;/stat</code> の CPU 時間は 10ms 単位（CLK_TCK = 100）なので、ナノ秒単位の <code>schedstat</code> を読みます。間隔を細かくしなくても、CPU 時間は正確に積み上がります。</li>
+    <li><b>スレッド1本ずつの状態は、64本以下のときだけ</b>：各スレッドの <code>syscall</code> と <code>stat</code> を読むのは重いので、500本のときは本数と CPU 時間だけにしています。</li>
+  </ul>
+
+  <h3>観察そのものが結果を乱さないか</h3>
+  <ul>
+    <li>イベントの記録は、ロック付きの配列に時刻とスレッド ID を積むだけです。実測で1件あたり約 90ns（<code>cargo run --release --example trace_overhead</code>）、1リクエストあたり6〜12件なので 1µs 前後です。event_loop が accept から I/O 待ちの登録までにかける数十 µs と比べて、数 % の上乗せです。ログを画面に出す処理（<code>println!</code>）は、計測中は止めています。</li>
+    <li>サンプラーとクライアントも同じマシン（<span id="env-cores">2</span>コア）で CPU を使います。CPU 計算のシナリオでは、壁時計で数 % 長くなることがあります。</li>
+    <li>tokio の内部（epoll_wait を呼ぶ場所）には計測点を入れていません。スレッドのレーンは 10ms ごとのサンプルで描いています（レーン名に「〜」が付きます）。</li>
+  </ul>
+
+  <h3>見せ方</h3>
+  <ul>
+    <li><b>同じ時間軸に縦に並べる</b>：パネルの横幅の違いが、そのまま時間の違いになります。縦軸の目盛りも、シナリオの中ではそろえています。</li>
+    <li><b>1行 = 1リクエスト</b>：赤（I/O 待ち）が縦に重なっていれば「同時に処理している」、階段になっていれば「1件ずつ」です。</li>
+    <li><b>スレッドのレーン</b>：同じ時刻に、何本のスレッドが何をしていたか。赤い行の重なりと、スレッドの本数を見比べると、①と②の違いが分かります。</li>
+    <li><b>拡大</b>：1秒の世界と 1µs の世界を同じ図で行き来できます。前者は「待ちが重なっている」ことを、後者は「1本のスレッドが次々に処理を進めている」ことを見せます。</li>
+  </ul>
+
+  <h3>再現する</h3>
+<pre><code>cargo run --release --bin observe -- all   # runs/ に記録（Linux）
+cargo run --release --bin report           # docs/data.js を作り直す
+# docs/index.html をブラウザで開く</code></pre>
+  <p class="note" id="env-text"></p>
+</div></section>
+</main>
+
+<script src="data.js"></script>
+<script>
+{
+const RUNS = window.HERRING_RUNS || [];
+const SC = {
+  io:{tab:'I/O 待ち × 5',title:'I/O 待ちのあるリクエストを5件同時に',presets:[['全体',null],['開始直後 2ms',[-100,2000]],['開始直後 20ms',[-500,20000]],['応答の瞬間',[999000,1006000]]]},
+  cpu:{tab:'CPU 計算 + 軽い4件',title:'重い CPU 計算の最中に、軽いリクエストが来たら',presets:[['全体',null],['開始直後 2ms',[-100,2000]],['2件目が届く頃',[49500,53000]]]},
+  scale:{tab:'I/O 待ち × 500',title:'I/O 待ちのあるリクエストを500件同時に',presets:[['全体',null],['開始直後 50ms',[-1000,50000]],['応答の瞬間',[995000,1080000]]]}};
+const KIND={blocking:'⓪ 1件ずつ',threaded:'① 1接続 = 1スレッド',event_loop:'② イベントループ',async_tokio:'③ async/await（tokio）'};
+const REQC={kernel:['var(--queue)','カーネルで待機（accept 前）'],base:['var(--recv)','通信・その他の処理'],wait:['var(--red)','I/O 待ち'],cpu:['var(--ink)','CPU 計算']};
+const THRC={cpu:['var(--ink)','CPU を使っている'],sleep:['var(--red)','sleep で寝て待つ'],epoll:['var(--blue)','epoll_wait（イベント待ち）'],sock:['var(--grey)','accept / read で待つ'],futex:['var(--futex)','futex（出番待ち）'],other:['var(--yel)','その他']};
+const esc=v=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $=id=>document.getElementById(id);
+
+// ---------- データの下ごしらえ ----------
+const rowsOf=t=>t?t.rows.map(r=>{const o={};t.cols.forEach((c,i)=>o[c]=r[i]);return o}):[];
+function prep(raw){
+  const m=raw.meta, sev=rowsOf(raw.server_events), cev=rowsOf(raw.client_events), smp=rowsOf(raw.samples), ths=rowsOf(raw.thread_samples);
+  const dt=(m.interval_ms||10)*1000;
+  // サーバ側：接続ごと
+  const conns=new Map(),C=id=>conns.get(id)||conns.set(id,{id}).get(id);
+  for(const e of sev){if(!e.conn)continue;const c=C(e.conn);
+    if(e.kind==='request'){c.request=e.t_us;c.tid=e.tid;const [rq,...p]=String(e.arg).split(' ');c.req=rq==='-'?null:+rq;c.path=p.join(' ')}
+    else if(['accept','wait_begin','wait_end','cpu_begin','cpu_end','respond','close','thread_start','thread_end'].includes(e.kind)&&c[e.kind]==null)c[e.kind]=e.t_us}
+  const byReq=new Map([...conns.values()].filter(c=>c.req!=null).map(c=>[c.req,c]));
+  // クライアント側：リクエストごと
+  const reqs=new Map();
+  for(const e of cev){const r=reqs.get(e.req)||reqs.set(e.req,{req:e.req}).get(e.req);if(r[e.kind]==null)r[e.kind]=e.t_us;if(e.kind==='sent')r.path=e.arg}
+  const list=[...reqs.values()].map(r=>({...r,s:byReq.get(r.req)||{}}));
+  list.sort((a,b)=>(a.s.accept??a.connect??0)-(b.s.accept??b.connect??0)||a.req-b.req);
+  // スレッドのレーン
+  const evTids=new Set(sev.filter(e=>e.kind==='block'||e.kind==='unblock').map(e=>e.tid));
+  const tids=[...new Set([...sev.map(e=>e.tid),...ths.map(s=>s.tid)])].sort((a,b)=>a-b);
+  const lanes=tids.map(tid=>{
+    const evs=sev.filter(e=>e.tid===tid),sm=ths.filter(s=>s.tid===tid);
+    const ts=[...evs.map(e=>e.t_us),...sm.map(s=>s.t_us)];
+    const life=[Math.min(...ts),Math.max(...ts)+(sm.length?dt:0)];
+    const ts0=evs.find(e=>e.kind==='thread_start'),te=evs.find(e=>e.kind==='thread_end');
+    if(ts0)life[0]=ts0.t_us;if(te)life[1]=te.t_us;
+    const spans=[];let sampled=false;
+    if(evTids.has(tid)){
+      let open=null;
+      for(const e of evs){
+        if(e.kind==='block')open={t0:e.t_us,what:String(e.arg)};
+        else if(e.kind==='unblock'&&open){spans.push({t0:open.t0,t1:e.t_us,k:clsOf(open.what),what:open.what,info:String(e.arg)});open=null}
+      }
+      if(open)spans.push({t0:open.t0,t1:life[1],k:clsOf(open.what),what:open.what,info:''});
+    }else if(sm.length){
+      sampled=true;
+      for(const s of sm){const k=s.state==='R'||s.syscall==='running'?'cpu':clsOf(s.syscall);const L=spans.at(-1);
+        if(L&&L.k===k&&s.t_us-L.t1<=dt*1.5)L.t1=s.t_us+dt;else spans.push({t0:s.t_us,t1:s.t_us+dt,k,what:s.syscall,info:'10ms サンプル'})}
+    }
+    // CPU 計算はイベントがあれば常に正確な値で重ねる
+    let cb=null;for(const e of evs){if(e.kind==='cpu_begin')cb=e.t_us;if(e.kind==='cpu_end'&&cb!=null){spans.push({t0:cb,t1:e.t_us,k:'cpu',what:'CPU 計算',info:'conn '+e.conn,top:true});cb=null}}
+    const blocks=evs.filter(e=>e.kind==='block'&&e.conn===0).map(e=>e.arg);
+    const conn=evs.find(e=>e.kind==='thread_start')?.conn;
+    return {tid,life,spans,sampled,role:conn?'conn '+conn:blocks.includes('epoll_wait')?'main（ループ）':blocks.includes('accept')?'main（accept）':null};
+  });
+  if(!lanes.some(l=>l.role)&&lanes.length){lanes[0].role='main';lanes.slice(1).forEach((l,i)=>l.role='worker '+(i+1))}
+  lanes.forEach(l=>{if(!l.role)l.role='tid '+l.tid});
+  // ゲージ
+  const inflight=[];{const d=[];for(const c of conns.values()){if(c.accept!=null)d.push([c.accept,1]);if(c.close!=null)d.push([c.close,-1])}d.sort((a,b)=>a[0]-b[0]);let v=0;for(const [t,x] of d){v+=x;inflight.push([t,v])}}
+  const ser=k=>smp.map(s=>[s.t_us,s[k]]);
+  const cpu=[];for(let i=1;i<smp.length;i++){const a=smp[i-1],b=smp[i],w=b.t_us-a.t_us;if(w>0)cpu.push([a.t_us,b.t_us,(b.cpu_ns-a.cpu_ns)/(w*1000)*100])}
+  // 集計
+  const lat=list.filter(r=>r.done!=null).map(r=>r.done-r.connect).sort((a,b)=>a-b);
+  const kwait=list.filter(r=>r.s.accept!=null&&r.connect!=null).map(r=>r.s.accept-r.connect).sort((a,b)=>a-b);
+  const first=list.reduce((a,r)=>Math.min(a,r.connect??Infinity),Infinity),last=list.reduce((a,r)=>Math.max(a,r.done??-Infinity),-Infinity);
+  const f=smp[0]||{},l=smp.at(-1)||{};
+  const stat={total:last-first,lat,kwait,threads:Math.max(0,...smp.map(s=>s.threads)),rss:Math.max(0,...smp.map(s=>s.rss_kb))/1024,vsz:Math.max(0,...smp.map(s=>s.vsz_kb))/1024,
+    cpuMs:((l.cpu_ns||0)-(f.cpu_ns||0))/1e6,slices:(l.slices||0)-(f.slices||0),q:Math.max(0,...smp.map(s=>s.listen_q)),cost:smp.reduce((a,s)=>a+s.cost_us,0)/Math.max(1,smp.length),costMax:Math.max(0,...smp.map(s=>s.cost_us)),
+    held:Math.max(0,...inflight.map(p=>p[1])),done:lat.length,n:list.length};
+  return {m,server:m.server,scenario:m.scenario,dt,list,lanes,conns,inflight,threads:ser('threads'),queue:ser('listen_q'),rss:smp.map(s=>[s.t_us,s.rss_kb/1024]),cpu,stat,sev};
+}
+function clsOf(w){w=String(w);return /sleep/.test(w)?'sleep':/epoll|^poll/.test(w)?'epoll':/accept|read|recv/.test(w)?'sock':w==='futex'?'futex':w==='running'?'cpu':'other'}
+
+const DATA={};for(const r of RUNS){try{const p=prep(r);(DATA[p.scenario]||=[]).push(p)}catch(e){console.error(e)}}
+const order=['io','cpu','scale',...Object.keys(DATA).filter(k=>!SC[k])];
+const scenarios=order.filter(k=>DATA[k]);
+let cur=null,view=null,full=null;
+
+// ---------- 書式 ----------
+function fmtT(us,step){const a=Math.abs(step??us);if(a>=1e6)return (us/1e6).toFixed(step&&step%1e6?1:0)+'s';if(a>=1000)return (us/1000).toFixed(step&&step%1000?1:0)+'ms';return us.toFixed(a<1?1:0)+'µs'}
+function fmtDur(us){if(us==null||!isFinite(us))return '–';if(us>=1e6)return (us/1e6).toFixed(2)+' 秒';if(us>=1e4)return (us/1000).toFixed(0)+' ms';if(us>=1000)return (us/1000).toFixed(1)+' ms';return us.toFixed(us<10?1:0)+' µs'}
+function big(us){if(us>=1e6)return [(us/1e6).toFixed(2),'秒'];if(us>=1e4)return [(us/1000).toFixed(0),'ms'];if(us>=1000)return [(us/1000).toFixed(1),'ms'];return [us.toFixed(0),'µs']}
+const med=a=>a.length?a[Math.floor((a.length-1)/2)]:NaN;
+function niceStep(span,px){const target=span/Math.max(2,px/90);const p=10**Math.floor(Math.log10(target));for(const k of [1,2,5,10])if(k*p>=target)return k*p;return 10*p}
+
+// ---------- シナリオ ----------
+function renderTabs(){
+  $('scn').innerHTML=scenarios.map(k=>`<button role="tab" aria-selected="${k===cur}" data-k="${esc(k)}"><b>${esc(SC[k]?.tab||k)}</b><span>${esc(DATA[k][0].m.about||'')}</span></button>`).join('');
+  $('scn').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{location.hash=b.dataset.k}));
+}
+function select(k){
+  if(!DATA[k])k=scenarios[0];cur=k;const runs=DATA[k];
+  let a=Infinity,b=-Infinity;for(const r of runs)for(const q of r.list){a=Math.min(a,q.connect??Infinity);b=Math.max(b,q.done??-Infinity)}
+  const pad=(b-a)*.03;full=[Math.min(-pad,a-pad),b+pad];view=full.slice();
+  renderTabs();
+  $('sc-title').textContent=SC[k]?.title||k;$('sc-about').textContent=runs[0].m.about+'。'+runs[0].m.cores+' コアの Linux で記録。';
+  renderCards();renderTools();buildPanels();renderLegend();renderLook();renderTable();
+}
+function headline(r){
+  const s=r.stat;
+  if(cur==='cpu'){const lt=r.list.filter(q=>q.path==='/'&&q.done!=null).map(q=>q.done-q.connect);const avg=lt.reduce((x,y)=>x+y,0)/Math.max(1,lt.length);return {v:big(avg),h:'軽いリクエストの平均応答'}}
+  if(cur==='scale')return {v:[String(s.threads),'本'],h:'スレッド数の最大'};
+  return {v:big(s.total),h:`${s.n}件すべての完了まで`};
+}
+function renderCards(){
+  $('cards').innerHTML=DATA[cur].map(r=>{const h=headline(r),s=r.stat;
+    const meta=cur==='scale'?`完了 ${fmtDur(s.total)}・RSS ${s.rss.toFixed(1)} MB`:`スレッド ${s.threads}本・同時に抱えた接続 ${s.held}`;
+    return `<div class="card"><span class="nm">${esc(r.server)}</span><span class="kd">${esc(KIND[r.server]||'')}</span><span class="big">${esc(h.v[0])}<small>${esc(h.v[1])}</small></span><span class="hl">${esc(h.h)}</span><span class="mt">${esc(meta)}</span></div>`}).join('');
+}
+function renderTools(){
+  const ps=SC[cur]?.presets||[['全体',null]];
+  $('tools').innerHTML=ps.map(([lb,r],i)=>`<button data-i="${i}">${esc(lb)}</button>`).join('')+`<span class="rng" id="rng"></span>`;
+  $('tools').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{const r=ps[+b.dataset.i][1];setView(r?r.slice():full.slice())}));
+  markPreset();
+}
+function markPreset(){
+  const ps=SC[cur]?.presets||[];
+  $('tools').querySelectorAll('button').forEach(b=>{const r=ps[+b.dataset.i][1]||full;b.classList.toggle('on',Math.abs(r[0]-view[0])<1&&Math.abs(r[1]-view[1])<1)});
+  const w=view[1]-view[0];$('rng').textContent=`表示中 ${fmtT(view[0],w/5)} 〜 ${fmtT(view[1],w/5)}（幅 ${fmtDur(w)}）・ドラッグで拡大、ダブルタップで全体`;
+}
+function setView(v){view=[Math.max(full[0]-1e6,v[0]),v[1]];if(view[1]-view[0]<2)view[1]=view[0]+2;markPreset();drawAll()}
+
+// ---------- パネル ----------
+let panels=[];
+function buildPanels(){
+  $('panels').innerHTML=DATA[cur].map((r,i)=>`<div class="panel"><h3>${esc(r.server)} <span>${esc(KIND[r.server]||'')}</span></h3><div class="fig" id="fig-${i}"><svg id="svg-${i}" role="img" aria-label="${esc(r.server)} のタイムライン"></svg><div class="sel"></div><div class="tip"></div></div></div>`).join('');
+  panels=DATA[cur].map((r,i)=>({r,svg:$('svg-'+i),fig:$('fig-'+i),hits:[],geo:null}));
+  // ゲージの縦軸はシナリオ内でそろえる
+  const runs=DATA[cur];
+  scaleMax={inflight:Math.max(1,...runs.map(r=>r.stat.held)),threads:Math.max(1,...runs.map(r=>r.stat.threads)),queue:Math.max(1,...runs.map(r=>r.stat.q)),cpu:Math.max(100,...runs.flatMap(r=>r.cpu.map(c=>c[2]))),rss:Math.max(1,...runs.map(r=>r.stat.rss))};
+  panels.forEach(bindPanel);ro.disconnect();panels.forEach(p=>ro.observe(p.svg));drawAll();
+}
+let scaleMax={};
+const ro=new ResizeObserver(()=>drawAll());
+function drawAll(){panels.forEach(draw)}
+
+function draw(P){
+  const r=P.r,svg=P.svg,W=svg.clientWidth||800,narrow=W<560;
+  const lx=narrow?62:104,x0=lx,pw=W-lx-8,[a,b]=view,span=b-a;
+  const X=t=>x0+(t-a)/span*pw,cx=t=>Math.max(x0-2,Math.min(x0+pw+2,X(t)));
+  const vis=(t0,t1)=>t1>=a&&t0<=b;
+  let y=22,o='',hits=[],ticks='';
+  const step=niceStep(span,pw);
+  for(let t=Math.ceil(a/step)*step;t<=b;t+=step){const x=X(t);const an=x>x0+pw-24?'end':x<x0+12?'start':'middle';ticks+=`<line x1="${x}" x2="${x}" y1="16" y2="__H__" stroke="var(--line)"/><text x="${x}" y="11" font-size="11" text-anchor="${an}" fill="var(--sub)">${fmtT(t,step)}</text>`}
+  o+=ticks;
+  const zoomed=span<60000;
+  const head=(txt,note='')=>{y+=6;o+=`<text x="0" y="${y+11}" font-size="12" font-weight="600" fill="var(--ink)" stroke="var(--bg)" stroke-width="4" paint-order="stroke">${esc(txt)}<tspan font-weight="400" fill="var(--sub)">${note?'　'+esc(note):''}</tspan></text>`;y+=17};
+  const rect=(t0,t1,yy,h,fill,extra='')=>{if(!vis(t0,t1))return '';const x1=cx(t0),x2=cx(t1);return `<rect x="${x1.toFixed(1)}" y="${yy.toFixed(2)}" width="${Math.max(.8,x2-x1).toFixed(1)}" height="${h}" fill="${fill}"${extra}/>`};
+
+  // リクエスト
+  const n=r.list.length,rh=n<=12?13:n<=60?6:Math.max(.5,260/n),rg=n<=12?3:n<=60?1:0;
+  head('リクエスト',n>12?`${n}件（1行 = 1件）`:'1行 = 1件、上から accept された順');
+  const ry0=y;
+  for(const q of r.list){
+    const s=q.s,end=q.done??s.close??q.connect;
+    if(q.connect!=null)o+=rect(q.connect,end,y,rh,REQC.base[0]);
+    if(s.accept!=null&&q.connect!=null)o+=rect(q.connect,s.accept,y,rh,REQC.kernel[0]);
+    if(s.wait_begin!=null)o+=rect(s.wait_begin,s.wait_end??end,y,rh,REQC.wait[0]);
+    if(s.cpu_begin!=null)o+=rect(s.cpu_begin,s.cpu_end??end,y,rh,REQC.cpu[0]);
+    if(zoomed&&rh>=6)for(const t of [s.accept,s.request,s.respond])if(t!=null&&vis(t,t))o+=`<line x1="${X(t)}" x2="${X(t)}" y1="${y-1}" y2="${y+rh+1}" stroke="var(--ink)" stroke-width="1.5"/>`;
+    if(n<=12)o+=`<text x="${lx-6}" y="${y+rh-2}" font-size="11" text-anchor="end" fill="var(--sub)">#${q.req}</text>`;
+    hits.push({y0:y,y1:y+rh+rg,type:'req',q});y+=rh+rg;
+  }
+  if(n>12)o+=`<text x="${lx-6}" y="${ry0+10}" font-size="11" text-anchor="end" fill="var(--sub)">#1</text><text x="${lx-6}" y="${y-2}" font-size="11" text-anchor="end" fill="var(--sub)">#${n}</text>`;
+
+  // スレッド
+  const L=r.lanes;
+  if(L.length<=16){
+    head('スレッド',`${L.length}本`);
+    const lh=narrow?11:13;
+    for(const ln of L){
+      o+=`<text x="${lx-6}" y="${y+lh-2}" font-size="11" text-anchor="end" fill="var(--sub)">${esc((narrow?ln.role.replace(/（.*）/,''):ln.role)+(ln.sampled?' 〜':''))}</text>`;
+      if(!ln.sampled)o+=rect(ln.life[0],ln.life[1],y,lh,THRC.cpu[0]);   // 待っていない時間 = 実行中
+      else o+=rect(ln.life[0],ln.life[1],y+lh/2-.5,1,'var(--line)');
+      for(const s of ln.spans)if(!s.top)o+=rect(s.t0,s.t1,y,lh,THRC[s.k][0]);
+      for(const s of ln.spans)if(s.top)o+=rect(s.t0,s.t1,y,lh,THRC.cpu[0]);
+      if(zoomed)for(const s of ln.spans){const w=X(Math.min(s.t1,b))-X(Math.max(s.t0,a));if(w>70&&vis(s.t0,s.t1)){const lbl=s.k==='epoll'&&s.info?'epoll_wait → '+(s.info.split(':')[1]||'0')+'件':s.what;o+=`<text x="${Math.max(X(s.t0),x0)+4}" y="${y+lh-2.5}" font-size="10" fill="${s.k==='futex'||s.k==='other'?'var(--ink)':'var(--bg)'}">${esc(lbl)}</text>`}}
+      hits.push({y0:y,y1:y+lh+3,type:'lane',ln});y+=lh+3;
+    }
+  }else{head('スレッド',`最大 ${r.stat.threads}本。1本ずつは描かず、本数を下のゲージに表示`)}
+
+  // ゲージ
+  const gh=narrow?30:36;
+  const gauge=(title,unit,max,draw,key,src)=>{
+    head(title,`縦軸の上限 ${max<10?(+max.toFixed(1)):Math.round(max)}${unit}（4サーバ共通）・${src}`);
+    o+=`<line x1="${x0}" x2="${x0+pw}" y1="${y+gh}" y2="${y+gh}" stroke="var(--grey)"/>`;
+    o+=draw(y,gh);hits.push({y0:y-17,y1:y+gh,type:'gauge',key,title,unit});y+=gh+4;
+  };
+  const stepPath=(pts,yy,h,max,closeArea,endT)=>{
+    if(!pts.length)return '';const Y=v=>(yy+h-Math.min(1,(v||0)/max)*h).toFixed(1);
+    // 表示範囲の左端での値から始めて、範囲内の変化だけを階段状につなぐ
+    let v0=0;for(const p of pts){if(p[0]<=a)v0=p[1];else break}
+    let d=`M${x0},${Y(v0)}`;
+    for(const [t,v] of pts){if(t<=a)continue;if(t>b)break;d+=`H${X(t).toFixed(1)}V${Y(v)}`}
+    d+=`H${endT!=null&&endT<b?Math.max(x0,X(endT)).toFixed(1):x0+pw}`;
+    return closeArea?`<path d="${d}V${yy+h}H${x0}Z" fill="${closeArea}" stroke="none"/>`:`<path d="${d}" fill="none" stroke="var(--ink)" stroke-width="2"/>`;
+  };
+  const endS=(r.threads.at(-1)?.[0]??0)+r.dt;
+  gauge('サーバが抱えている接続','件',scaleMax.inflight,(yy,h)=>stepPath(r.inflight,yy,h,scaleMax.inflight),'inflight','イベントから');
+  gauge('カーネルの accept 待ち','件',scaleMax.queue,(yy,h)=>stepPath(r.queue,yy,h,scaleMax.queue,'var(--queue)',endS),'queue',`${r.dt/1000}ms サンプル`);
+  gauge('スレッド数','本',scaleMax.threads,(yy,h)=>stepPath(r.threads,yy,h,scaleMax.threads,null,endS),'threads',`${r.dt/1000}ms サンプル`);
+  gauge('CPU 使用率（1コア = 100%）','%',scaleMax.cpu,(yy,h)=>r.cpu.filter(c=>vis(c[0],c[1])).map(c=>{const hh=Math.min(1,c[2]/scaleMax.cpu)*h;return hh>0.2?rect(c[0],c[1],yy+h-hh,hh,'var(--ink)'):''}).join(''),'cpu',`${r.dt/1000}ms サンプル`);
+
+  y+=6;svg.setAttribute('viewBox',`0 0 ${W} ${y}`);svg.setAttribute('height',y);svg.innerHTML=o.replaceAll('__H__',y-4);
+  P.hits=hits;P.geo={x0,pw,a,b};
+}
+
+// ---------- 操作：ドラッグで拡大、ホバー/タップで詳細 ----------
+function bindPanel(P){
+  const svg=P.svg,sel=P.fig.querySelector('.sel'),tip=P.fig.querySelector('.tip');
+  let down=null,lastTap=0;
+  const tOf=px=>P.geo.a+(px-P.geo.x0)/P.geo.pw*(P.geo.b-P.geo.a);
+  svg.addEventListener('pointerdown',e=>{const bx=svg.getBoundingClientRect();down={x:e.clientX-bx.left,y:e.clientY-bx.top,moved:false,id:e.pointerId};
+    if(e.pointerType==='mouse')svg.setPointerCapture(e.pointerId)});
+  svg.addEventListener('pointermove',e=>{const bx=svg.getBoundingClientRect(),px=e.clientX-bx.left,py=e.clientY-bx.top;
+    if(down&&(Math.abs(px-down.x)>6)){down.moved=true;const x1=Math.max(P.geo.x0,Math.min(px,down.x)),x2=Math.min(P.geo.x0+P.geo.pw,Math.max(px,down.x));sel.style.display='block';sel.style.left=x1+'px';sel.style.width=(x2-x1)+'px';tip.style.display='none';return}
+    if(!down&&e.pointerType==='mouse')showTip(P,px,py,tip)});
+  const up=e=>{if(!down)return;const bx=svg.getBoundingClientRect(),px=e.clientX-bx.left,py=e.clientY-bx.top;sel.style.display='none';
+    if(down.moved){const t1=tOf(Math.max(P.geo.x0,Math.min(px,down.x))),t2=tOf(Math.min(P.geo.x0+P.geo.pw,Math.max(px,down.x)));if(t2-t1>1)setView([t1,t2])}
+    else{const now=Date.now();if(now-lastTap<320){setView(full.slice());tip.style.display='none'}else showTip(P,px,py,tip);lastTap=now}
+    down=null};
+  svg.addEventListener('pointerup',up);svg.addEventListener('pointercancel',()=>{down=null;sel.style.display='none'});
+  svg.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'&&!down)tip.style.display='none'});
+  svg.addEventListener('dblclick',()=>setView(full.slice()));
+}
+function showTip(P,px,py,tip){
+  if(!P.geo||px<P.geo.x0){tip.style.display='none';return}
+  const h=P.hits.find(h=>py>=h.y0&&py<h.y1);if(!h){tip.style.display='none';return}
+  const t=P.geo.a+(px-P.geo.x0)/P.geo.pw*(P.geo.b-P.geo.a);const L=[];const r=P.r;
+  if(h.type==='req'){const q=h.q,s=q.s,rel=v=>v==null?'–':fmtT(v,Math.abs(v)>=1e4?1000:1);
+    L.push(`<b>リクエスト #${q.req}</b>　${esc(q.path||s.path||'')}`);
+    L.push(`connect ${rel(q.connect)} → accept ${rel(s.accept)}（カーネルで ${fmtDur(s.accept-q.connect)}）`);
+    if(s.wait_begin!=null)L.push(`I/O 待ち ${fmtDur((s.wait_end??q.done)-s.wait_begin)}`);
+    if(s.cpu_begin!=null)L.push(`CPU 計算 ${fmtDur((s.cpu_end??q.done)-s.cpu_begin)}`);
+    L.push(`応答を読み終える ${rel(q.done)}　<b>合計 ${fmtDur(q.done-q.connect)}</b>`);
+    if(s.tid)L.push(`担当スレッド tid ${s.tid}`)}
+  else if(h.type==='lane'){const ln=h.ln;const sp=ln.spans.filter(s=>s.t0<=t&&t<=s.t1).sort((x,y)=>(y.top?1:0)-(x.top?1:0))[0];
+    L.push(`<b>${esc(ln.role)}</b>　tid ${ln.tid}${ln.sampled?'（10ms ごとのサンプル）':''}`);
+    if(sp)L.push(`${esc(THRC[sp.k][1])}　${esc(sp.what)}`,`${fmtT(sp.t0,1)} から ${fmtDur(sp.t1-sp.t0)}${sp.k==='epoll'&&sp.info?'、戻ったとき '+esc(sp.info.split(':')[1]||'0')+' 件の準備完了':''}`);
+    else if(t>=ln.life[0]&&t<=ln.life[1])L.push(ln.sampled?'記録なし':'CPU を使っている（待っていない）');else L.push('このスレッドはまだ／もう存在しない')}
+  else{const at=arr=>{let v=null;for(const p of arr){if(p[0]<=t)v=p[1];else break}return v};
+    let v=h.key==='inflight'?at(r.inflight):h.key==='queue'?at(r.queue):h.key==='threads'?at(r.threads):(r.cpu.find(c=>c[0]<=t&&t<c[1])||[])[2];
+    L.push(`<b>${esc(h.title)}</b>`,`${fmtT(t,Math.max(1,(P.geo.b-P.geo.a)/100))} 時点：${v==null?'–':(+v).toFixed(h.key==='cpu'?0:0)+' '+h.unit}`)}
+  tip.innerHTML=L.join('<br>');tip.style.display='block';
+  const fw=P.fig.clientWidth,tw=tip.offsetWidth;tip.style.left=Math.max(0,Math.min(px+12,fw-tw))+'px';tip.style.top=(py+14)+'px';
+}
+
+// ---------- 凡例・読みどころ・表 ----------
+function renderLegend(){
+  $('lg-req').innerHTML='<li class="h">リクエスト</li>'+Object.values(REQC).map(([c,l])=>`<li><i style="background:${c}"></i>${esc(l)}</li>`).join('');
+  $('lg-thr').innerHTML='<li class="h">スレッド</li>'+Object.values(THRC).map(([c,l])=>`<li><i style="background:${c};outline:1px solid var(--line)"></i>${esc(l)}</li>`).join('');
+}
+const R=k=>DATA[cur].find(r=>r.server===k);
+// どのスレッドが何件のリクエストを処理したか（例：「worker 1 が 1件、worker 2 が 4件」）
+function tidSplit(r){const cnt=new Map();for(const c of r.conns.values())if(c.tid!=null)cnt.set(c.tid,(cnt.get(c.tid)||0)+1);
+  return [...cnt].sort((a,b)=>a[0]-b[0]).map(([t,n])=>`${r.lanes.find(l=>l.tid===t)?.role||'tid '+t} が ${n}件`).join('、')}
+function renderLook(){
+  const items=[],box=[];
+  const ms=us=>fmtDur(us);
+  if(cur==='io'){
+    const bl=R('blocking'),th=R('threaded'),ev=R('event_loop'),tk=R('async_tokio');
+    if(bl)items.push(`<b>blocking</b>：赤（I/O 待ち）が階段状に1本ずつ並びます。最後のリクエストは、薄い赤（カーネルで待機）のまま ${ms(Math.max(...bl.list.map(q=>(q.s.accept??0)-q.connect)))} 待たされました。カーネルは接続を受け付けてリクエストのデータも受信済みなのに、アプリが読みに来ない状態です。`);
+    if(th)items.push(`<b>threaded</b>：赤が5本、縦に重なります。スレッドのレーンでも、5本のスレッドが同じ時間帯に sleep で寝ています。止まっているのはスレッドで、プロセス全体ではありません。`);
+    if(ev)items.push(`<b>event_loop</b>：赤は5本重なるのに、スレッドは1本だけで、ほとんどずっと青（epoll_wait）の中にいます。1秒あまりの間に CPU を使ったのは合計 ${ev.stat.cpuMs.toFixed(1)} ms でした。`);
+    if(tk)items.push(`<b>async_tokio</b>：形は event_loop と同じです。accept のループは main スレッド（<code>block_on</code>）で回り、受け付けた接続はタスクとしてワーカー ${tk.lanes.length-1} 本に振り分けられます（${tidSplit(tk)}）。ワーカーは、epoll_wait か futex（出番待ち）で寝ています。`);
+    const acc=ev?[...ev.conns.values()].map(c=>c.accept).filter(v=>v!=null).sort((x,y)=>x-y):[];
+    const spawn=th?[...th.conns.values()].filter(c=>c.thread_start!=null&&c.accept!=null).map(c=>c.thread_start-c.accept):[];
+    box.push(`<b>「開始直後 2ms」を押してみてください</b>`);
+    if(acc.length)box.push(`<p>event_loop は、1回の epoll_wait から戻ったあと ${ms(acc.at(-1)-acc[0])} のうちに5件を accept しています。黒い細い線が、スレッドが実際に CPU を使った瞬間です。</p>`);
+    if(spawn.length)box.push(`<p>threaded は、accept してからスレッドが動き出すまで、1本あたり平均 ${ms(spawn.reduce((x,y)=>x+y,0)/spawn.length)} かかっています。スレッドを作る費用です。</p>`);
+  }else if(cur==='cpu'){
+    const light=r=>{const v=r.list.filter(q=>q.path==='/'&&q.done!=null).map(q=>q.done-q.connect);return v.reduce((x,y)=>x+y,0)/Math.max(1,v.length)};
+    const bl=R('blocking'),th=R('threaded'),ev=R('event_loop'),tk=R('async_tokio');
+    if(ev)items.push(`<b>event_loop</b>：1本しかないスレッドが CPU 計算（黒）で塞がっている間、軽いリクエストは薄い赤（カーネルで待機）のまま、平均 ${ms(light(ev))} 待たされました。Node.js で重い同期処理を書いてはいけない理由がこれです。`);
+    if(bl)items.push(`<b>blocking</b> も同じ形です（平均 ${ms(light(bl))}）。`);
+    if(th)items.push(`<b>threaded</b>：計算は別のスレッドなので、軽いリクエストは平均 ${ms(light(th))} で返りました。${th.m.cores} コアあるので、計算と並んで別のコアで動けます。`);
+    if(tk)items.push(`<b>async_tokio</b>：計算でワーカー1本が塞がっても、軽いリクエストは別のワーカーがさばきました（平均 ${ms(light(tk))}。${tidSplit(tk)}）。accept は main スレッドが続けています。ワーカーが1本だけで、計算と同じワーカーに軽いタスクが積まれれば、event_loop と同じ形になります。`);
+    box.push(`<b>コア数とイベントループ</b>`,`<p>イベントループは「待ち」には強いものの、「計算」は分けられません。nginx がコア数ぶんワーカープロセスを立てるのも、tokio が複数のワーカースレッドを持つのも、計算を別のコアに逃がすためです。本番の tokio なら、重い計算は <code>spawn_blocking</code> で専用のスレッドに回します。</p>`);
+  }else if(cur==='scale'){
+    const th=R('threaded'),ev=R('event_loop'),tk=R('async_tokio');
+    items.push(`完了までの時間は、どれも約1秒です。500件の待ちが、すべて重なっています。`);
+    if(th)items.push(`<b>threaded</b>：スレッドは ${th.stat.threads} 本です。仮想メモリ（VSZ）は ${th.stat.vsz.toFixed(0)} MB 確保されていますが、実際に使っている物理メモリ（RSS）は ${th.stat.rss.toFixed(1)} MB だけでした。スタックは触ったページしか実メモリにならないためです。`);
+    if(th&&ev)items.push(`CPU に載った回数（コンテキストスイッチの目安）は、threaded が ${th.stat.slices} 回、event_loop が ${ev.stat.slices} 回でした。スレッドが多いほど、OS の切り替え作業が増えます。`);
+    if(ev)items.push(`<b>event_loop</b>：1本のスレッドで、RSS は ${ev.stat.rss.toFixed(1)} MB でした。`);
+    if(tk)items.push(`<b>async_tokio</b>：スレッドは ${tk.stat.threads} 本のまま、500件をさばきました。`);
+    const kw=[th,ev,tk].filter(Boolean).map(r=>`${r.server} が最大 ${ms(r.stat.kwait.at(-1))}`).join('、');
+    items.push(`500件が一斉に来たとき、すべてを accept し終えるまでにかかった時間は、${kw}でした（「開始直後 50ms」で、薄い赤の長さとして見えます）。その間、まだ accept されていない接続は、カーネルの accept 待ちのキュー（backlog、ここでは上限 1024）が受け止めています。threaded は accept のたびにスレッドを1本作るので、受け付けの速さがスレッドの生成速度で決まります。`);
+    box.push(`<b>C10K 問題の今</b>`,`<p>500 スレッドなら、メモリの面ではまだ余裕があります。1万、10万となると、スレッドの生成費用、切り替えの回数、カーネルの管理コストが効いてきます。「1接続 = 1スレッド」が苦しくなる点が C10K 問題で、イベント駆動はそれへの答えです。</p>`);
+    if(th)box.push(`<p class="note">500 スレッドのとき、サンプラー1回の観察に平均 ${(th.stat.cost/1000).toFixed(1)} ms、最大 ${(th.stat.costMax/1000).toFixed(0)} ms かかりました。この区間は、ゲージの点がまばらです。</p>`);
+  }
+  $('look').innerHTML=items.map(t=>`<li>${t}</li>`).join('');$('tipbox').innerHTML=box.join('');
+}
+function renderTable(){
+  const rows=DATA[cur].map(r=>{const s=r.stat;return [r.server,fmtDur(s.total),`${fmtDur(s.lat[0])} / ${fmtDur(med(s.lat))} / ${fmtDur(s.lat.at(-1))}`,s.held,`${fmtDur(med(s.kwait))} / ${fmtDur(s.kwait.at(-1))}`,s.threads,s.cpuMs.toFixed(1)+' ms',(s.cpuMs*1000/s.total*100).toFixed(s.cpuMs*1000/s.total<.01?2:1)+' %',s.slices,s.rss.toFixed(1)+' MB',s.vsz.toFixed(0)+' MB']});
+  const head=['サーバ','全件の完了まで','応答時間 最小 / 中央 / 最大','同時に抱えた接続','accept されるまで 中央 / 最大','スレッド 最大','CPU 時間','CPU を使っていた割合','CPU に載った回数','RSS 最大','VSZ 最大'];
+  $('tbl').innerHTML=`<thead><tr>${head.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+}
+function renderEnv(){
+  const m=RUNS[0]?.meta;if(!m)return;
+  $('env-cores').textContent=m.cores;
+  $('env-text').textContent=`このページのデータ：Linux ${m.kernel}（${m.arch}）、${m.cores} コア、サンプリング間隔 ${m.interval_ms} ms。`;
+  const small=Object.values(DATA).flat().filter(r=>r.stat.threads<=8),bigr=Object.values(DATA).flat().filter(r=>r.stat.threads>100);
+  const avg=a=>a.reduce((x,r)=>x+r.stat.cost,0)/Math.max(1,a.length);
+  if(small.length)$('cost-text').textContent=`実測でスレッドが数本なら平均 ${(avg(small)/1000).toFixed(2)} ms`+(bigr.length?`、500 本なら平均 ${(avg(bigr)/1000).toFixed(1)} ms（最大 ${(Math.max(...bigr.map(r=>r.stat.costMax))/1000).toFixed(0)} ms）です`:'です');
+}
+
+// ---------- 起動 ----------
+if(!scenarios.length){$('panels').innerHTML='<p class="err">data.js が読み込めませんでした。<code>cargo run --release --bin report</code> で docs/data.js を作ってから、このページを開き直してください。</p>'}
+else{
+  renderEnv();
+  const route=()=>{const h=location.hash.slice(1);if(h==='design'){if(!cur)select(scenarios[0]);return}if(h!==cur||!cur)select(scenarios.includes(h)?h:scenarios[0])};
+  window.addEventListener('hashchange',route);route();
+}
+}
+</script>
+</body>
+</html>

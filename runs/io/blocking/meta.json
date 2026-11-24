@@ -1,0 +1,13 @@
+{
+  "scenario": "io",
+  "about": "1秒の I/O 待ちがあるリクエストを5件同時に送る",
+  "server": "blocking",
+  "client_start_ns": 771382958643,
+  "interval_ms": 10,
+  "samples": 513,
+  "cores": 2,
+  "kernel": "6.18.44-fc-v819",
+  "arch": "x86_64",
+  "server_exited": true,
+  "plans": [{"offset_ms":0,"path":"/wait?ms=1000"},{"offset_ms":0,"path":"/wait?ms=1000"},{"offset_ms":0,"path":"/wait?ms=1000"},{"offset_ms":0,"path":"/wait?ms=1000"},{"offset_ms":0,"path":"/wait?ms=1000"}]
+}
