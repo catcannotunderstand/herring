@@ -44,6 +44,19 @@ a{color:inherit}
 .tools button{appearance:none;font:inherit;font-size:14px;min-height:40px;padding:0 14px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer}
 .tools button.on{background:var(--ink);color:var(--bg)}
 .tools .rng{font-size:13px;color:var(--sub);font-variant-numeric:tabular-nums;margin-left:auto}
+.tools .row{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;width:100%}
+.srv{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;width:100%}
+.tools .srv button{min-height:46px;padding:4px 10px;text-align:start;line-height:1.25;border-width:1px}
+.tools .srv button b{font-weight:800;margin-right:4px}
+.tools .srv button[aria-selected=true]{background:var(--ink);color:var(--bg);box-shadow:inset 0 -4px 0 var(--red)}
+.tools .srv button:disabled{opacity:.35;cursor:default}
+.tools button.tog{border-style:dashed}
+.card{cursor:pointer}.card.cur{box-shadow:inset 0 -5px 0 var(--red)}
+.card:focus-visible{outline:3px solid var(--blue);outline-offset:-3px}
+.read li.cur{background:var(--panel);margin-left:-1.1em;padding:6px 8px 6px 1.1em;border-left:4px solid var(--red)}
+.panel h3 .st{font-variant-numeric:tabular-nums}
+.hint-m{display:none;margin:6px 0 0}
+@media(max-width:600px){.tools .hint{display:none}.hint-m{display:block}.tools{gap:6px}.tools .row{gap:6px}}
 .panel{margin-top:18px}
 .panel h3{margin:0 0 2px;display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline}
 .panel h3 span{font-size:13px;font-weight:400;color:var(--sub)}
@@ -70,6 +83,7 @@ thead th{font-weight:600;color:var(--sub);font-size:13px;vertical-align:bottom;w
 pre{overflow-x:auto;background:var(--bg);padding:12px 14px;font-size:13px;line-height:1.55;border-left:4px solid var(--ink);margin:10px 0 14px}
 .note{font-size:13px;color:var(--sub)}
 .err{background:var(--queue);padding:14px 16px}
+@media(max-width:600px){.tools .srv button{font-size:12px;padding:4px 6px}.tools .srv button b{display:block}.tools .row button{font-size:13px;padding:0 10px;min-height:40px}}
 @media(max-width:760px){.read{grid-template-columns:minmax(0,1fr)}.card{padding-left:0!important;border-left:0!important;border-top:1px solid var(--line)}.cards{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:14px}.tools .rng{margin-left:0;width:100%}}
 @media(max-width:600px){table{font-size:13px}.stack thead{display:none}.stack tr{display:grid;padding-block:10px}.stack td{display:flow-root;border:0;padding:3px 0;padding-inline-start:9em;text-align:start;white-space:normal}.stack td::before{content:attr(data-l);float:inline-start;width:8.5em;margin-inline-start:-9em;white-space:normal;color:var(--sub)}.stack td:empty{display:none}.scn button{padding-right:10px}.scn button+button{padding-left:10px}.scn span{display:none}}
 </style>
@@ -78,7 +92,7 @@ pre{overflow-x:auto;background:var(--bg);padding:12px 14px;font-size:13px;line-h
 <body>
 <header class="band">
   <h1>待っているあいだに、別のリクエストを進める</h1>
-  <p class="lede">4種類の小さな Web サーバに同じリクエストを送りました。サーバの内側（埋め込んだ計測点）と外側（10ms ごとの <code>/proc</code>）の両方から記録しています。どのパネルも同じ時間軸で、ドラッグすると µs の世界まで拡大できます。</p>
+  <p class="lede">4種類の小さな Web サーバに同じリクエストを送りました。サーバの内側（埋め込んだ計測点）と外側（10ms ごとの <code>/proc</code>）の両方から記録しています。下のボタンでサーバを切り替えると、時間軸も図の位置もそのままで、データだけが入れ替わります。ドラッグすると µs の世界まで拡大できます。</p>
   <div class="scn" role="tablist" id="scn"></div>
 </header>
 
@@ -89,6 +103,7 @@ pre{overflow-x:auto;background:var(--bg);padding:12px 14px;font-size:13px;line-h
   <div class="cards" id="cards"></div>
   <div class="tools" id="tools"></div>
   <div id="panels"></div>
+  <p class="note hint-m">図の上を横にドラッグすると拡大、ダブルタップで全体に戻ります。色の帯をタップすると詳細が出ます。</p>
   <ul class="legend" id="lg-req"></ul>
   <ul class="legend" id="lg-thr" style="margin-top:6px"></ul>
 </section>
@@ -134,7 +149,7 @@ pre{overflow-x:auto;background:var(--bg);padding:12px 14px;font-size:13px;line-h
 
   <h3>見せ方</h3>
   <ul>
-    <li><b>同じ時間軸に縦に並べる</b>：パネルの横幅の違いが、そのまま時間の違いになります。縦軸の目盛りも、シナリオの中ではそろえています。</li>
+    <li><b>同じ枠のまま、データだけを切り替える</b>：サーバを切り替えても、時間軸、縦軸の目盛り、スレッドのレーンの場所は変わりません。同じ位置の色や線を見比べるだけで、違いが分かります（キーボードの ← → でも切り替えられます）。縦に並べて見たいときは「4つ並べる」を押します。</li>
     <li><b>1行 = 1リクエスト</b>：赤（I/O 待ち）が縦に重なっていれば「同時に処理している」、階段になっていれば「1件ずつ」です。</li>
     <li><b>スレッドのレーン</b>：同じ時刻に、何本のスレッドが何をしていたか。赤い行の重なりと、スレッドの本数を見比べると、①と②の違いが分かります。</li>
     <li><b>拡大</b>：1秒の世界と 1µs の世界を同じ図で行き来できます。前者は「待ちが重なっている」ことを、後者は「1本のスレッドが次々に処理を進めている」ことを見せます。</li>
@@ -227,7 +242,8 @@ function clsOf(w){w=String(w);return /sleep/.test(w)?'sleep':/epoll|^poll/.test(
 const DATA={};for(const r of RUNS){try{const p=prep(r);(DATA[p.scenario]||=[]).push(p)}catch(e){console.error(e)}}
 const order=['io','cpu','scale',...Object.keys(DATA).filter(k=>!SC[k])];
 const scenarios=order.filter(k=>DATA[k]);
-let cur=null,view=null,full=null;
+let cur=null,view=null,full=null,srv=null,stack=false;
+const NUM={blocking:'⓪',threaded:'①',event_loop:'②',async_tokio:'③'};
 
 // ---------- 書式 ----------
 function fmtT(us,step){const a=Math.abs(step??us);if(a>=1e6)return (us/1e6).toFixed(step&&step%1e6?1:0)+'s';if(a>=1000)return (us/1000).toFixed(step&&step%1000?1:0)+'ms';return us.toFixed(a<1?1:0)+'µs'}
@@ -245,6 +261,8 @@ function select(k){
   if(!DATA[k])k=scenarios[0];cur=k;const runs=DATA[k];
   let a=Infinity,b=-Infinity;for(const r of runs)for(const q of r.list){a=Math.min(a,q.connect??Infinity);b=Math.max(b,q.done??-Infinity)}
   const pad=(b-a)*.03;full=[Math.min(-pad,a-pad),b+pad];view=full.slice();
+  // 前のシナリオで選んでいたサーバがあれば引き継ぐ（scale に blocking は無いので threaded へ）
+  if(!runs.some(r=>r.server===srv))srv=(runs.find(r=>r.server==='threaded')||runs[0]).server;
   renderTabs();
   $('sc-title').textContent=SC[k]?.title||k;$('sc-about').textContent=runs[0].m.about+'。'+runs[0].m.cores+' コアの Linux で記録。';
   renderCards();renderTools();buildPanels();renderLegend();renderLook();renderTable();
@@ -258,32 +276,54 @@ function headline(r){
 function renderCards(){
   $('cards').innerHTML=DATA[cur].map(r=>{const h=headline(r),s=r.stat;
     const meta=cur==='scale'?`完了 ${fmtDur(s.total)}・RSS ${s.rss.toFixed(1)} MB`:`スレッド ${s.threads}本・同時に抱えた接続 ${s.held}`;
-    return `<div class="card"><span class="nm">${esc(r.server)}</span><span class="kd">${esc(KIND[r.server]||'')}</span><span class="big">${esc(h.v[0])}<small>${esc(h.v[1])}</small></span><span class="hl">${esc(h.h)}</span><span class="mt">${esc(meta)}</span></div>`}).join('');
+    return `<div class="card${!stack&&r.server===srv?' cur':''}" role="button" tabindex="0" data-s="${esc(r.server)}"><span class="nm">${esc(r.server)}</span><span class="kd">${esc(KIND[r.server]||'')}</span><span class="big">${esc(h.v[0])}<small>${esc(h.v[1])}</small></span><span class="hl">${esc(h.h)}</span><span class="mt">${esc(meta)}</span></div>`}).join('');
+  $('cards').querySelectorAll('.card').forEach(c=>{const go=()=>pickServer(c.dataset.s,true);c.addEventListener('click',go);c.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();go()}})});
+}
+// サーバを切り替える。図の位置はそのままで、データだけが入れ替わる
+function pickServer(name,fromCard){
+  if(stack){const i=DATA[cur].findIndex(r=>r.server===name);if(fromCard&&i>=0)$('fig-'+i)?.closest('.panel').scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(!DATA[cur].some(r=>r.server===name))return;
+  srv=name;renderCards();markServers();buildPanels();markLook();
+  if(fromCard){const t=$('tools');if(t.getBoundingClientRect().top>innerHeight*.6||t.getBoundingClientRect().bottom<0)t.scrollIntoView({behavior:'smooth',block:'start'})}
+}
+function markServers(){
+  $('tools').querySelectorAll('.srv button').forEach(b=>{b.setAttribute('aria-selected',String(!stack&&b.dataset.s===srv));b.tabIndex=!stack&&b.dataset.s===srv?0:-1});
+  const t=$('tools').querySelector('.tog');if(t){t.textContent=stack?'1つずつ切り替える':'4つ並べる';t.setAttribute('aria-pressed',String(stack))}
 }
 function renderTools(){
   const ps=SC[cur]?.presets||[['全体',null]];
-  $('tools').innerHTML=ps.map(([lb,r],i)=>`<button data-i="${i}">${esc(lb)}</button>`).join('')+`<span class="rng" id="rng"></span>`;
-  $('tools').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{const r=ps[+b.dataset.i][1];setView(r?r.slice():full.slice())}));
-  markPreset();
+  const all=['blocking','threaded','event_loop','async_tokio'],have=new Set(DATA[cur].map(r=>r.server));
+  const extra=DATA[cur].map(r=>r.server).filter(x=>!all.includes(x));
+  $('tools').innerHTML=`<div class="srv" role="tablist" aria-label="サーバ">${[...all,...extra].map(k=>`<button role="tab" data-s="${esc(k)}" ${have.has(k)?'':'disabled title="このシナリオでは記録していません"'}><b>${NUM[k]||''}</b>${esc(k)}</button>`).join('')}</div>`
+    +`<div class="row">${ps.map(([lb,r],i)=>`<button data-i="${i}">${esc(lb)}</button>`).join('')}<button class="tog" aria-pressed="false"></button><span class="rng" id="rng"></span></div>`;
+  $('tools').querySelectorAll('button[data-i]').forEach(b=>b.addEventListener('click',()=>{const r=ps[+b.dataset.i][1];setView(r?r.slice():full.slice())}));
+  const sb=[...$('tools').querySelectorAll('.srv button:not(:disabled)')];
+  sb.forEach((b,i)=>{b.addEventListener('click',()=>{if(stack){stack=false;renderCards()}pickServer(b.dataset.s)});
+    b.addEventListener('keydown',e=>{const d=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0;if(!d)return;e.preventDefault();const n=sb[(i+d+sb.length)%sb.length];if(stack){stack=false;renderCards()}pickServer(n.dataset.s);n.focus()})});
+  $('tools').querySelector('.tog').addEventListener('click',()=>{stack=!stack;renderCards();markServers();buildPanels();markLook()});
+  markServers();markPreset();
 }
 function markPreset(){
   const ps=SC[cur]?.presets||[];
-  $('tools').querySelectorAll('button').forEach(b=>{const r=ps[+b.dataset.i][1]||full;b.classList.toggle('on',Math.abs(r[0]-view[0])<1&&Math.abs(r[1]-view[1])<1)});
-  const w=view[1]-view[0];$('rng').textContent=`表示中 ${fmtT(view[0],w/5)} 〜 ${fmtT(view[1],w/5)}（幅 ${fmtDur(w)}）・ドラッグで拡大、ダブルタップで全体`;
+  $('tools').querySelectorAll('button[data-i]').forEach(b=>{const r=ps[+b.dataset.i][1]||full;b.classList.toggle('on',Math.abs(r[0]-view[0])<1&&Math.abs(r[1]-view[1])<1)});
+  const w=view[1]-view[0];$('rng').innerHTML=`表示中 ${esc(fmtT(view[0],w/5))} 〜 ${esc(fmtT(view[1],w/5))}（幅 ${esc(fmtDur(w))}）<span class="hint">・ドラッグで拡大、ダブルタップで全体</span>`;
 }
 function setView(v){view=[Math.max(full[0]-1e6,v[0]),v[1]];if(view[1]-view[0]<2)view[1]=view[0]+2;markPreset();drawAll()}
 
 // ---------- パネル ----------
 let panels=[];
 function buildPanels(){
-  $('panels').innerHTML=DATA[cur].map((r,i)=>`<div class="panel"><h3>${esc(r.server)} <span>${esc(KIND[r.server]||'')}</span></h3><div class="fig" id="fig-${i}"><svg id="svg-${i}" role="img" aria-label="${esc(r.server)} のタイムライン"></svg><div class="sel"></div><div class="tip"></div></div></div>`).join('');
-  panels=DATA[cur].map((r,i)=>({r,svg:$('svg-'+i),fig:$('fig-'+i),hits:[],geo:null}));
+  const shown=stack?DATA[cur]:DATA[cur].filter(r=>r.server===srv);
+  $('panels').innerHTML=shown.map((r,i)=>{const h=headline(r);return `<div class="panel"><h3>${esc(r.server)} <span>${esc(KIND[r.server]||'')}</span><span class="st">${esc(h.h)} <b>${esc(h.v[0])} ${esc(h.v[1])}</b>・スレッド最大 ${r.stat.threads}本</span></h3><div class="fig" id="fig-${i}"><svg id="svg-${i}" role="img" aria-label="${esc(r.server)} のタイムライン"></svg><div class="sel"></div><div class="tip"></div></div></div>`}).join('');
+  panels=shown.map((r,i)=>({r,svg:$('svg-'+i),fig:$('fig-'+i),hits:[],geo:null}));
   // ゲージの縦軸はシナリオ内でそろえる
   const runs=DATA[cur];
+  // スレッドのレーンは、4サーバのうち一番多い本数ぶんの場所をとっておく（切り替えてもゲージの位置が動かない）
+  laneSlots=Math.max(0,...runs.map(r=>r.lanes.length<=16?r.lanes.length:0));
   scaleMax={inflight:Math.max(1,...runs.map(r=>r.stat.held)),threads:Math.max(1,...runs.map(r=>r.stat.threads)),queue:Math.max(1,...runs.map(r=>r.stat.q)),cpu:Math.max(100,...runs.flatMap(r=>r.cpu.map(c=>c[2]))),rss:Math.max(1,...runs.map(r=>r.stat.rss))};
   panels.forEach(bindPanel);ro.disconnect();panels.forEach(p=>ro.observe(p.svg));drawAll();
 }
-let scaleMax={};
+let scaleMax={},laneSlots=0;
 const ro=new ResizeObserver(()=>drawAll());
 function drawAll(){panels.forEach(draw)}
 
@@ -317,12 +357,11 @@ function draw(P){
   if(n>12)o+=`<text x="${lx-6}" y="${ry0+10}" font-size="11" text-anchor="end" fill="var(--sub)">#1</text><text x="${lx-6}" y="${y-2}" font-size="11" text-anchor="end" fill="var(--sub)">#${n}</text>`;
 
   // スレッド
-  const L=r.lanes;
+  const L=r.lanes,lh=narrow?11:13;
   if(L.length<=16){
     head('スレッド',`${L.length}本`);
-    const lh=narrow?11:13;
     for(const ln of L){
-      o+=`<text x="${lx-6}" y="${y+lh-2}" font-size="11" text-anchor="end" fill="var(--sub)">${esc((narrow?ln.role.replace(/（.*）/,''):ln.role)+(ln.sampled?' 〜':''))}</text>`;
+      o+=`<text x="${lx-6}" y="${y+lh-2}" font-size="11" text-anchor="end" fill="var(--sub)">${esc((narrow?ln.role.replace(/（.*）/,'').replace('worker ','wkr '):ln.role)+(ln.sampled?' 〜':''))}</text>`;
       if(!ln.sampled)o+=rect(ln.life[0],ln.life[1],y,lh,THRC.cpu[0]);   // 待っていない時間 = 実行中
       else o+=rect(ln.life[0],ln.life[1],y+lh/2-.5,1,'var(--line)');
       for(const s of ln.spans)if(!s.top)o+=rect(s.t0,s.t1,y,lh,THRC[s.k][0]);
@@ -331,11 +370,12 @@ function draw(P){
       hits.push({y0:y,y1:y+lh+3,type:'lane',ln});y+=lh+3;
     }
   }else{head('スレッド',`最大 ${r.stat.threads}本。1本ずつは描かず、本数を下のゲージに表示`)}
+  y+=Math.max(0,laneSlots-(L.length<=16?L.length:0))*(lh+3);
 
   // ゲージ
   const gh=narrow?30:36;
   const gauge=(title,unit,max,draw,key,src)=>{
-    head(title,`縦軸の上限 ${max<10?(+max.toFixed(1)):Math.round(max)}${unit}（4サーバ共通）・${src}`);
+    const mx=max<10?(+max.toFixed(1)):Math.round(max);head(title,narrow?`上限 ${mx}${unit}`:`縦軸の上限 ${mx}${unit}（4サーバ共通）・${src}`);
     o+=`<line x1="${x0}" x2="${x0+pw}" y1="${y+gh}" y2="${y+gh}" stroke="var(--grey)"/>`;
     o+=draw(y,gh);hits.push({y0:y-17,y1:y+gh,type:'gauge',key,title,unit});y+=gh+4;
   };
@@ -441,7 +481,11 @@ function renderLook(){
     box.push(`<b>C10K 問題の今</b>`,`<p>500 スレッドなら、メモリの面ではまだ余裕があります。1万、10万となると、スレッドの生成費用、切り替えの回数、カーネルの管理コストが効いてきます。「1接続 = 1スレッド」が苦しくなる点が C10K 問題で、イベント駆動はそれへの答えです。</p>`);
     if(th)box.push(`<p class="note">500 スレッドのとき、サンプラー1回の観察に平均 ${(th.stat.cost/1000).toFixed(1)} ms、最大 ${(th.stat.costMax/1000).toFixed(0)} ms かかりました。この区間は、ゲージの点がまばらです。</p>`);
   }
-  $('look').innerHTML=items.map(t=>`<li>${t}</li>`).join('');$('tipbox').innerHTML=box.join('');
+  $('look').innerHTML=items.map(t=>`<li>${t}</li>`).join('');$('tipbox').innerHTML=box.join('');markLook();
+}
+// 切り替え中のサーバの説明を目立たせる
+function markLook(){
+  $('look').querySelectorAll('li').forEach(li=>{const b=li.querySelector('b');li.classList.toggle('cur',!stack&&!!b&&b.textContent.trim()===srv)});
 }
 function renderTable(){
   const rows=DATA[cur].map(r=>{const s=r.stat;return [r.server,fmtDur(s.total),`${fmtDur(s.lat[0])} / ${fmtDur(med(s.lat))} / ${fmtDur(s.lat.at(-1))}`,s.held,`${fmtDur(med(s.kwait))} / ${fmtDur(s.kwait.at(-1))}`,s.threads,s.cpuMs.toFixed(1)+' ms',(s.cpuMs*1000/s.total*100).toFixed(s.cpuMs*1000/s.total<.01?2:1)+' %',s.slices,s.rss.toFixed(1)+' MB',s.vsz.toFixed(0)+' MB']});
@@ -463,6 +507,9 @@ else{
   renderEnv();
   const route=()=>{const h=location.hash.slice(1);if(h==='design'){if(!cur)select(scenarios[0]);return}if(h!==cur||!cur)select(scenarios.includes(h)?h:scenarios[0])};
   window.addEventListener('hashchange',route);route();
+  // フォーカスがどこにも無いときも ← → でサーバを切り替えられるように
+  document.addEventListener('keydown',e=>{if(e.target!==document.body||stack||e.altKey||e.metaKey||e.ctrlKey)return;const d=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0;if(!d)return;
+    const names=DATA[cur].map(r=>r.server),i=names.indexOf(srv);e.preventDefault();pickServer(names[(i+d+names.length)%names.length])});
 }
 }
 </script>
